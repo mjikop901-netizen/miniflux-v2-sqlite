@@ -1,0 +1,30 @@
+services:
+  init:
+    image: alpine:3.24
+    command: ["sh", "-c", "chown -R 65534:65534 /var/lib/miniflux"]
+    volumes:
+      - miniflux-data:/var/lib/miniflux
+
+  miniflux:
+    image: ${MINIFLUX_IMAGE:-ghcr.io/mjikop901-netizen/miniflux:latest}
+    container_name: miniflux
+    restart: always
+    ports:
+      - "80:8080"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    environment:
+      - DATABASE_URL=sqlite:///var/lib/miniflux/miniflux.db
+      - RUN_MIGRATIONS=1
+      - CREATE_ADMIN=1
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?Set ADMIN_PASSWORD before starting Miniflux}
+    # Optional health check:
+    # healthcheck:
+    #   test: ["CMD", "/usr/bin/miniflux", "-healthcheck", "auto"]
+    volumes:
+      - miniflux-data:/var/lib/miniflux
+
+volumes:
+  miniflux-data:

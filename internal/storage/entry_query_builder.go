@@ -217,14 +217,27 @@ func (e *EntryQueryBuilder) WithShareCodeNotEmpty() *EntryQueryBuilder {
 
 // WithSorting add a sort expression.
 func (e *EntryQueryBuilder) WithSorting(column, direction string) *EntryQueryBuilder {
+	sortColumn := entrySortColumn(column)
+
 	switch {
 	case strings.EqualFold(direction, "ASC"):
-		e.sortExpressions = append(e.sortExpressions, quoteIdentifier(column)+" ASC")
+		e.sortExpressions = append(e.sortExpressions, sortColumn+" ASC")
 	case strings.EqualFold(direction, "DESC"):
-		e.sortExpressions = append(e.sortExpressions, quoteIdentifier(column)+" DESC")
+		e.sortExpressions = append(e.sortExpressions, sortColumn+" DESC")
 	}
 
 	return e
+}
+
+func entrySortColumn(column string) string {
+	switch column {
+	case "category_id":
+		return `f."category_id"`
+	case "category_title":
+		return `c."title"`
+	default:
+		return "e." + quoteIdentifier(column)
+	}
 }
 
 // WithLimit sets the limit. A non-positive limit is clamped to

@@ -133,6 +133,16 @@ func TestSQLiteStorageEntries(t *testing.T) {
 		t.Fatalf("negative search returned %#v and %v error; want only entry ID %d", withoutPostgreSQL, err, entry.ID)
 	}
 
+	sortedEntries, err := store.NewEntryQueryBuilder(user.ID).WithSorting("id", "DESC").GetEntries()
+	if err != nil || len(sortedEntries) != 2 || sortedEntries[0].ID != secondEntry.ID {
+		t.Fatalf("descending entry sort returned %#v and %v error; want second entry first", sortedEntries, err)
+	}
+
+	sortedEntryIDs, err := store.NewEntryQueryBuilder(user.ID).WithSorting("id", "DESC").GetEntryIDs()
+	if err != nil || len(sortedEntryIDs) != 2 || sortedEntryIDs[0] != secondEntry.ID {
+		t.Fatalf("descending entry ID sort returned %#v and %v error; want second entry first", sortedEntryIDs, err)
+	}
+
 	if err := store.SetEntriesStatus(user.ID, []int64{entry.ID}, model.EntryStatusRead); err != nil {
 		t.Fatalf("SetEntriesStatus() error = %v", err)
 	}
