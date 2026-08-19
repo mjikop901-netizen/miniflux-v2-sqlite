@@ -11,6 +11,14 @@ import (
 
 // Migrate executes database migrations.
 func Migrate(db *sql.DB) error {
+	if isSQLite(db) {
+		return migrateSQLite(db)
+	}
+
+	return migratePostgreSQL(db)
+}
+
+func migratePostgreSQL(db *sql.DB) error {
 	var currentVersion int
 	db.QueryRow(`SELECT version FROM schema_version`).Scan(&currentVersion)
 
@@ -52,6 +60,10 @@ func Migrate(db *sql.DB) error {
 
 // IsSchemaUpToDate checks if the database schema is up to date.
 func IsSchemaUpToDate(db *sql.DB) error {
+	if isSQLite(db) {
+		return isSQLiteSchemaUpToDate(db)
+	}
+
 	var currentVersion int
 	db.QueryRow(`SELECT version FROM schema_version`).Scan(&currentVersion)
 	if currentVersion < schemaVersion {

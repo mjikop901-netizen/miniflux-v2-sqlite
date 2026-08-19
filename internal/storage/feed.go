@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -177,11 +178,32 @@ func (s *Storage) FeedsByCategoryWithCounters(userID, categoryID int64) (model.F
 func (s *Storage) WeeklyFeedEntryCount(userID, feedID int64) (int, error) {
 	// Calculate a virtual weekly count based on the average updating frequency.
 	// This helps after just adding a high volume feed.
-	// Return 0 when the 'count(*)' is zero(0) or one(1).
+	// Return 0 when the count is zero or one.
+	if s.sqlite {
+		var count int
+		var first, last sql.NullTime
+		err := s.db.QueryRow(`
+			SELECT count(*), min(published_at), max(published_at)
+			FROM entries
+			WHERE user_id=$1 AND feed_id=$2 AND published_at >= $3
+		`, userID, feedID, time.Now().AddDate(0, 0, -7)).Scan(&count, &first, &last)
+		if err != nil {
+			return 0, fmt.Errorf(`store: unable to fetch weekly count for feed #%d: %v`, feedID, err)
+		}
+		if count <= 1 || !first.Valid || !last.Valid {
+			return 0, nil
+		}
+		average := last.Time.Sub(first.Time) / time.Duration(count-1)
+		if average <= 0 {
+			return 0, nil
+		}
+		return int(math.Ceil(float64(7*24*time.Hour) / float64(average))), nil
+	}
+
 	query := `
 		SELECT
 			COALESCE(CAST(CEIL(
-				(EXTRACT(epoch from interval '1 week'))	/
+				(EXTRACT(epoch from interval '1 week')) /
 				NULLIF((EXTRACT(epoch from (max(published_at)-min(published_at))/NULLIF((count(*)-1), 0) )), 0)
 			) AS BIGINT), 0)
 		FROM
@@ -189,19 +211,17 @@ func (s *Storage) WeeklyFeedEntryCount(userID, feedID int64) (int, error) {
 		WHERE
 			entries.user_id=$1 AND
 			entries.feed_id=$2 AND
-			entries.published_at >= now() - interval '1 week';
+			entries.published_at >= CURRENT_TIMESTAMP - interval '1 week';
 	`
 
 	var weeklyCount int
 	err := s.db.QueryRow(query, userID, feedID).Scan(&weeklyCount)
-
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return 0, nil
 	case err != nil:
 		return 0, fmt.Errorf(`store: unable to fetch weekly count for feed #%d: %v`, feedID, err)
 	}
-
 	return weeklyCount, nil
 }
 
@@ -480,6 +500,6 @@ func (s *Storage) ResetFeedErrors() error {
 
 // ResetNextCheckAt schedules all feeds to be checked immediately.
 func (s *Storage) ResetNextCheckAt() error {
-	_, err := s.db.Exec(`UPDATE feeds SET next_check_at=now()`)
+	_, err := s.db.Exec(`UPDATE feeds SET next_check_at=CURRENT_TIMESTAMP`)
 	return err
 }

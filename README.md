@@ -90,7 +90,7 @@ Features
 
 - Written in [Go (Golang)](https://golang.org/).
 - Single binary compiled statically without dependency.
-- Works only with [PostgreSQL](https://www.postgresql.org/).
+- Supports [PostgreSQL](https://www.postgresql.org/) and SQLite.
 - Does not use any ORM or any complicated frameworks.
 - Uses modern vanilla JavaScript only when necessary.
 - All static files are bundled into the application binary using the Go `embed` package.

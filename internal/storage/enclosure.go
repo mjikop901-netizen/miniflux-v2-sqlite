@@ -10,8 +10,6 @@ import (
 	"strings"
 
 	"miniflux.app/v2/internal/model"
-
-	"github.com/lib/pq"
 )
 
 // EnclosuresByEntryID returns all enclosures for the given entry.
@@ -63,6 +61,11 @@ func (s *Storage) EnclosuresByEntryID(entryID int64) (model.EnclosureList, error
 
 // EnclosuresByEntryIDs returns enclosures for the given entries, grouped by entry ID.
 func (s *Storage) EnclosuresByEntryIDs(entryIDs []int64) (map[int64]model.EnclosureList, error) {
+	enclosuresMap := make(map[int64]model.EnclosureList)
+	if len(entryIDs) == 0 {
+		return enclosuresMap, nil
+	}
+
 	query := `
 		SELECT
 			id,
@@ -75,17 +78,16 @@ func (s *Storage) EnclosuresByEntryIDs(entryIDs []int64) (map[int64]model.Enclos
 		FROM
 			enclosures
 		WHERE
-			entry_id = ANY($1)
+			entry_id IN (` + placeholders(1, len(entryIDs)) + `)
 		ORDER BY id ASC
 	`
 
-	rows, err := s.db.Query(query, pq.Array(entryIDs))
+	rows, err := s.db.Query(query, appendInt64s(nil, entryIDs)...)
 	if err != nil {
 		return nil, fmt.Errorf("store: unable to fetch enclosures: %w", err)
 	}
 	defer rows.Close()
 
-	enclosuresMap := make(map[int64]model.EnclosureList)
 	for rows.Next() {
 		var enclosure model.Enclosure
 		err := rows.Scan(
@@ -152,12 +154,16 @@ func (s *Storage) createEnclosure(tx *sql.Tx, enclosure *model.Enclosure) error 
 		return nil
 	}
 
+	conflictTarget := "(user_id, entry_id, encode(sha256(url::bytea), 'hex'))"
+	if s.sqlite {
+		conflictTarget = "(user_id, entry_id, url)"
+	}
 	query := `
 		INSERT INTO enclosures
 			(url, size, mime_type, entry_id, user_id, media_progression)
 		VALUES
 			($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (user_id, entry_id, encode(sha256(url::bytea), 'hex')) DO NOTHING
+		ON CONFLICT ` + conflictTarget + ` DO NOTHING
 		RETURNING
 			id
 	`
@@ -202,18 +208,16 @@ func (s *Storage) updateEnclosures(tx *sql.Tx, entry *model.Entry) error {
 		}
 	}
 
-	query := `
-		DELETE FROM
-			enclosures
-		WHERE
-			user_id=$1 AND entry_id=$2 AND url <> ALL($3)
-	`
-
-	_, err := tx.Exec(query, entry.UserID, entry.ID, pq.Array(sqlValues))
-	if err != nil {
-		return fmt.Errorf(`store: unable to delete old enclosures: %v`, err)
+	query := `DELETE FROM enclosures WHERE user_id=$1 AND entry_id=$2`
+	args := []any{entry.UserID, entry.ID}
+	if len(sqlValues) > 0 {
+		query += " AND url NOT IN (" + placeholders(3, len(sqlValues)) + ")"
+		args = appendStrings(args, sqlValues)
 	}
 
+	if _, err := tx.Exec(query, args...); err != nil {
+		return fmt.Errorf(`store: unable to delete old enclosures: %v`, err)
+	}
 	return nil
 }
 

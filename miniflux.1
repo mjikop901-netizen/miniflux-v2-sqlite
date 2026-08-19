@@ -253,7 +253,9 @@ Minimum number of database connections\&.
 Default is 1\&.
 .TP
 .B DATABASE_URL
-PostgreSQL connection parameters\&.
+PostgreSQL connection parameters, or a SQLite database URL\&.
+.br
+SQLite URLs use the \fBsqlite:\fR or \fBfile:\fR scheme, for example \fBsqlite:///var/lib/miniflux/miniflux.db\fR\&. SQLite uses one application connection and enables foreign-key enforcement, a busy timeout, and WAL journal mode automatically\&.
 .br
 Default is "user=postgres password=postgres dbname=miniflux2 sslmode=disable"\&.
 .TP

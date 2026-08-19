@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lib/pq"
 	"miniflux.app/v2/internal/model"
 	"miniflux.app/v2/internal/timezone"
 )
@@ -26,6 +25,7 @@ type feedQueryBuilder struct {
 	counterJoinFeeds  bool
 	counterArgs       []any
 	counterConditions []string
+	sqlite            bool
 }
 
 // NewFeedQueryBuilder returns a new FeedQueryBuilder.
@@ -36,6 +36,7 @@ func (s *Storage) NewFeedQueryBuilder(userID int64) *feedQueryBuilder {
 		conditions:        []string{"f.user_id = $1"},
 		counterArgs:       []any{userID, model.EntryStatusRead, model.EntryStatusUnread},
 		counterConditions: []string{"e.user_id = $1", "e.status IN ($2, $3)"},
+		sqlite:            s.sqlite,
 	}
 }
 
@@ -70,9 +71,9 @@ func (f *feedQueryBuilder) WithCounters() *feedQueryBuilder {
 func (f *feedQueryBuilder) WithSorting(column, direction string) *feedQueryBuilder {
 	switch {
 	case strings.EqualFold(direction, "ASC"):
-		f.sortExpressions = append(f.sortExpressions, pq.QuoteIdentifier(column)+" ASC")
+		f.sortExpressions = append(f.sortExpressions, quoteIdentifier(column)+" ASC")
 	case strings.EqualFold(direction, "DESC"):
-		f.sortExpressions = append(f.sortExpressions, pq.QuoteIdentifier(column)+" DESC")
+		f.sortExpressions = append(f.sortExpressions, quoteIdentifier(column)+" DESC")
 	}
 
 	return f
@@ -137,6 +138,13 @@ func (f *feedQueryBuilder) GetFeed() (*model.Feed, error) {
 
 // GetFeeds returns a list of feeds that match the condition.
 func (f *feedQueryBuilder) GetFeeds() (model.Feeds, error) {
+	checkedAt := "f.checked_at at time zone u.timezone"
+	nextCheckAt := "f.next_check_at at time zone u.timezone"
+	if f.sqlite {
+		checkedAt = "f.checked_at"
+		nextCheckAt = "f.next_check_at"
+	}
+
 	query := `
 		SELECT
 			f.id,
@@ -148,8 +156,8 @@ func (f *feedQueryBuilder) GetFeeds() (model.Feeds, error) {
 			f.etag_header,
 			f.last_modified_header,
 			f.user_id,
-			f.checked_at at time zone u.timezone,
-			f.next_check_at at time zone u.timezone,
+			` + checkedAt + `,
+			` + nextCheckAt + `,
 			f.parsing_error_count,
 			f.parsing_error_msg,
 			f.scraper_rules,

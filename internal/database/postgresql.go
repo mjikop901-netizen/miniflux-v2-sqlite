@@ -10,8 +10,13 @@ import (
 	_ "github.com/lib/pq"
 )
 
-// NewConnectionPool configures the database connection pool.
+// NewConnectionPool configures the database connection pool. SQLite is selected
+// when DATABASE_URL uses a sqlite: or file: URL; all other URLs use PostgreSQL.
 func NewConnectionPool(dsn string, minConnections, maxConnections int, connectionLifetime time.Duration) (*sql.DB, error) {
+	if isSQLiteURL(dsn) {
+		return newSQLiteConnectionPool(dsn, connectionLifetime)
+	}
+
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, err

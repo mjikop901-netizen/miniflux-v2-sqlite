@@ -54,7 +54,7 @@ func (b *batchBuilder) WithErrorLimit(limit int) *batchBuilder {
 }
 
 func (b *batchBuilder) WithNextCheckExpired() *batchBuilder {
-	b.conditions = append(b.conditions, "next_check_at < now()")
+	b.conditions = append(b.conditions, "next_check_at < CURRENT_TIMESTAMP")
 	return b
 }
 

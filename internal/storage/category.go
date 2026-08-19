@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/lib/pq"
 	"miniflux.app/v2/internal/model"
 )
 
@@ -250,26 +249,30 @@ func (s *Storage) RemoveCategory(userID, categoryID int64) error {
 // reassigns affected feeds to the user's first remaining category. It returns
 // an error if the deletion would leave the user without any categories.
 func (s *Storage) RemoveAndReplaceCategoriesByName(userid int64, titles []string) error {
+	if len(titles) == 0 {
+		return nil
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return errors.New("store: unable to begin transaction")
 	}
+	defer tx.Rollback()
 
-	titleParam := pq.Array(titles)
+	args := appendStrings([]any{userid}, titles)
+	titleList := placeholders(2, len(titles))
+
 	var count int
-	query := "SELECT count(*) FROM categories WHERE user_id = $1 AND title <> ALL($2)"
-	err = tx.QueryRow(query, userid, titleParam).Scan(&count)
-	if err != nil {
-		tx.Rollback()
+	query := "SELECT count(*) FROM categories WHERE user_id = $1 AND title NOT IN (" + titleList + ")"
+	if err := tx.QueryRow(query, args...).Scan(&count); err != nil {
 		return errors.New("store: unable to retrieve category count")
 	}
 	if count < 1 {
-		tx.Rollback()
 		return errors.New("store: at least 1 category must remain after deletion")
 	}
 
 	query = `
-		WITH d_cats AS (SELECT id FROM categories WHERE user_id = $1 AND title = ANY($2))
+		WITH d_cats AS (SELECT id FROM categories WHERE user_id = $1 AND title IN (` + titleList + `))
 		UPDATE feeds
 		 SET category_id =
 		  (SELECT id
@@ -279,18 +282,13 @@ func (s *Storage) RemoveAndReplaceCategoriesByName(userid int64, titles []string
 			LIMIT 1)
 		WHERE user_id = $1 AND category_id IN (SELECT id FROM d_cats)
 	`
-	_, err = tx.Exec(query, userid, titleParam)
-	if err != nil {
-		tx.Rollback()
+	if _, err := tx.Exec(query, args...); err != nil {
 		return fmt.Errorf("store: unable to replace categories: %v", err)
 	}
 
-	query = "DELETE FROM categories WHERE user_id = $1 AND title = ANY($2)"
-	_, err = tx.Exec(query, userid, titleParam)
-	if err != nil {
-		tx.Rollback()
+	query = "DELETE FROM categories WHERE user_id = $1 AND title IN (" + titleList + ")"
+	if _, err := tx.Exec(query, args...); err != nil {
 		return fmt.Errorf("store: unable to delete categories: %v", err)
 	}
-	tx.Commit()
-	return nil
+	return tx.Commit()
 }

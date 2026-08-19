@@ -10,8 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
-
 	"miniflux.app/v2/internal/model"
 	"miniflux.app/v2/internal/timezone"
 )
@@ -44,17 +42,41 @@ func (e *EntryQueryBuilder) WithoutContent() *EntryQueryBuilder {
 
 // WithSearchQuery adds full-text search query to the condition.
 func (e *EntryQueryBuilder) WithSearchQuery(query string) *EntryQueryBuilder {
-	if query != "" {
-		nArgs := len(e.args) + 1
-		e.conditions = append(e.conditions, fmt.Sprintf("e.document_vectors @@ websearch_to_tsquery($%d)", nArgs))
-		e.args = append(e.args, query)
-
-		// 0.0000001 = 0.1 / (seconds_in_a_day)
-
-		e.sortExpressions = append(e.sortExpressions,
-			fmt.Sprintf("ts_rank(document_vectors, websearch_to_tsquery($%d)) - extract (epoch from now() - published_at)::float * 0.0000001 DESC", nArgs),
-		)
+	if query == "" {
+		return e
 	}
+
+	nArgs := len(e.args) + 1
+	if e.store.sqlite {
+		search, ok := sqliteSearchQuery(query)
+		if !ok {
+			e.conditions = append(e.conditions, "FALSE")
+			return e
+		}
+		if search.match != "" {
+			nArgs = len(e.args) + 1
+			e.conditions = append(e.conditions, fmt.Sprintf("e.id IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH $%d)", nArgs))
+			e.args = append(e.args, search.match)
+			e.sortExpressions = append(e.sortExpressions,
+				fmt.Sprintf("(SELECT bm25(entries_fts, 10.0, 1.0) FROM entries_fts WHERE entries_fts MATCH $%d AND rowid=e.id) ASC", nArgs),
+			)
+		}
+		for _, excluded := range search.exclusions {
+			nArgs = len(e.args) + 1
+			e.conditions = append(e.conditions, fmt.Sprintf("e.id NOT IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH $%d)", nArgs))
+			e.args = append(e.args, sqliteFTSTerm(excluded))
+		}
+		e.sortExpressions = append(e.sortExpressions, "e.published_at DESC", "e.id DESC")
+		return e
+	}
+
+	e.conditions = append(e.conditions, fmt.Sprintf("e.document_vectors @@ websearch_to_tsquery($%d)", nArgs))
+	e.args = append(e.args, query)
+
+	// 0.0000001 = 0.1 / (seconds_in_a_day)
+	e.sortExpressions = append(e.sortExpressions,
+		fmt.Sprintf("ts_rank(document_vectors, websearch_to_tsquery($%d)) - extract (epoch from now() - published_at)::float * 0.0000001 DESC", nArgs),
+	)
 	return e
 }
 
@@ -116,13 +138,12 @@ func (e *EntryQueryBuilder) AfterEntryID(entryID int64) *EntryQueryBuilder {
 
 // WithEntryIDs filter by entry IDs.
 func (e *EntryQueryBuilder) WithEntryIDs(entryIDs ...int64) *EntryQueryBuilder {
-	if len(entryIDs) == 1 {
-		e.conditions = append(e.conditions, fmt.Sprintf("e.id = $%d", len(e.args)+1))
-		e.args = append(e.args, entryIDs[0])
-	} else if len(entryIDs) > 1 {
-		e.conditions = append(e.conditions, fmt.Sprintf("e.id = ANY($%d)", len(e.args)+1))
-		e.args = append(e.args, pq.Int64Array(entryIDs))
+	if len(entryIDs) == 0 {
+		return e
 	}
+
+	e.conditions = append(e.conditions, "e.id IN ("+placeholders(len(e.args)+1, len(entryIDs))+")")
+	e.args = appendInt64s(e.args, entryIDs)
 	return e
 }
 
@@ -146,21 +167,28 @@ func (e *EntryQueryBuilder) WithCategoryID(categoryID int64) *EntryQueryBuilder 
 
 // WithStatuses filter by a list of entry statuses.
 func (e *EntryQueryBuilder) WithStatuses(statuses ...string) *EntryQueryBuilder {
-	if len(statuses) == 1 {
-		e.conditions = append(e.conditions, fmt.Sprintf("e.status = $%d", len(e.args)+1))
-		e.args = append(e.args, statuses[0])
-	} else if len(statuses) > 1 {
-		e.conditions = append(e.conditions, fmt.Sprintf("e.status = ANY($%d)", len(e.args)+1))
-		e.args = append(e.args, pq.StringArray(statuses))
+	if len(statuses) == 0 {
+		return e
 	}
+
+	e.conditions = append(e.conditions, "e.status IN ("+placeholders(len(e.args)+1, len(statuses))+")")
+	e.args = appendStrings(e.args, statuses)
 	return e
 }
 
 // WithTags filter by a list of entry tags.
 func (e *EntryQueryBuilder) WithTags(tags ...string) *EntryQueryBuilder {
-	if len(tags) > 0 {
-		e.conditions = append(e.conditions, fmt.Sprintf("LOWER(e.tags::text)::text[] @> LOWER($%d::text)::text[]", len(e.args)+1))
-		e.args = append(e.args, pq.Array(tags))
+	if !e.store.sqlite {
+		if len(tags) > 0 {
+			e.conditions = append(e.conditions, fmt.Sprintf("LOWER(e.tags::text)::text[] @> LOWER($%d::text)::text[]", len(e.args)+1))
+			e.args = append(e.args, postgresTags(tags))
+		}
+		return e
+	}
+
+	for _, tag := range tags {
+		e.conditions = append(e.conditions, "EXISTS (SELECT 1 FROM json_each(e.tags) WHERE LOWER(value) = LOWER($"+strconv.Itoa(len(e.args)+1)+"))")
+		e.args = append(e.args, tag)
 	}
 	return e
 }
@@ -191,9 +219,9 @@ func (e *EntryQueryBuilder) WithShareCodeNotEmpty() *EntryQueryBuilder {
 func (e *EntryQueryBuilder) WithSorting(column, direction string) *EntryQueryBuilder {
 	switch {
 	case strings.EqualFold(direction, "ASC"):
-		e.sortExpressions = append(e.sortExpressions, pq.QuoteIdentifier(column)+" ASC")
+		e.sortExpressions = append(e.sortExpressions, quoteIdentifier(column)+" ASC")
 	case strings.EqualFold(direction, "DESC"):
-		e.sortExpressions = append(e.sortExpressions, pq.QuoteIdentifier(column)+" DESC")
+		e.sortExpressions = append(e.sortExpressions, quoteIdentifier(column)+" DESC")
 	}
 
 	return e
@@ -300,6 +328,11 @@ func (e *EntryQueryBuilder) fetchEntries(withCount bool) (model.Entries, int, er
 		countColumn = "count(*) OVER(),"
 	}
 
+	entryDate := "e.published_at at time zone u.timezone"
+	if e.store.sqlite {
+		entryDate = "e.published_at"
+	}
+
 	query := `
 		SELECT
 			` + countColumn + `
@@ -307,7 +340,7 @@ func (e *EntryQueryBuilder) fetchEntries(withCount bool) (model.Entries, int, er
 			e.user_id,
 			e.feed_id,
 			e.hash,
-			e.published_at at time zone u.timezone,
+			` + entryDate + `,
 			e.title,
 			e.url,
 			e.comments_url,
@@ -391,7 +424,7 @@ func (e *EntryQueryBuilder) fetchEntries(withCount bool) (model.Entries, int, er
 			&entry.ReadingTime,
 			&entry.CreatedAt,
 			&entry.ChangedAt,
-			pq.Array(&entry.Tags),
+			tagScanner{tags: &entry.Tags, sqlite: e.store.sqlite},
 			&entry.Language,
 			&entry.Feed.Title,
 			&entry.Feed.FeedURL,
