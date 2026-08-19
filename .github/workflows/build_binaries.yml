@@ -17,7 +17,6 @@ on:
 jobs:
   build:
     name: Build
-    if: github.repository_owner == 'miniflux'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

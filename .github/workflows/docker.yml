@@ -1,5 +1,6 @@
 name: Docker
 on:
+  workflow_dispatch:
   schedule:
     - cron: '0 1 * * *'
   push:
@@ -13,7 +14,6 @@ on:
 jobs:
   docker-images:
     name: Docker Images
-    if: github.repository_owner == 'miniflux'
     permissions:
       packages: write
     runs-on: ubuntu-latest
